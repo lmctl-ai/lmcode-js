@@ -67,3 +67,12 @@ test('int64 arithmetic has exact wrapping without Number conversion', () => {
   assert.equal(wrapInt64((1n << 63n) - 1n + 1n), -(1n << 63n));
   assert.equal(wrapInt64(-(1n << 63n) - 1n), (1n << 63n) - 1n);
 });
+
+test('unequal branch stack depths are rejected at the join', () => {
+  const code = Uint8Array.of(0x03, 1, 0x0d, 0, 0, 0, 9, 0x01, 0, 0, 0, 0, 0, 0, 0, 1, 0x11);
+  assert.throws(() => verifyRegion({ constants: [], imports: [], contexts: [] }, { code, locals: [], lines: [] }, 'void'), (error) => {
+    assert.equal(error.code, 'LOAD_BAD_BYTECODE');
+    assert.match(error.message, /inconsistent operand stack depth at control-flow join 16: 0 versus 1/);
+    return true;
+  });
+});

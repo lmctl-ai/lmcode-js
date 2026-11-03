@@ -7,6 +7,12 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cases = [
   {
     file: 'src/core/verifier.mjs',
+    test: 'unequal branch stack depths',
+    original: 'else if (depths[index] !== depth) bad(',
+    mutant: 'else if (false) bad(',
+  },
+  {
+    file: 'src/core/verifier.mjs',
     test: 'hidden compiler-owned locals',
     original: 'if (region.locals[ins.a].hidden) bad(`STORE_LOCAL at offset ${ins.pc} writes compiler-owned loop local ${ins.a}`);',
     mutant: 'if (false) bad(`STORE_LOCAL at offset ${ins.pc} writes compiler-owned loop local ${ins.a}`);',
