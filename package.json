@@ -20,7 +20,7 @@
     "lmcode-js-sample": "./sample/main.mjs"
   },
   "scripts": {
-    "test": "node --test test/core.test.mjs test/dry.test.mjs test/verifier-controls.test.mjs test/std-regressions.test.mjs test/allocations.test.mjs",
+    "test": "node --test test/core.test.mjs test/dry.test.mjs test/verifier-controls.test.mjs test/std-regressions.test.mjs test/allocations.test.mjs test/result-depth.test.mjs",
     "mutation": "node scripts/test-verifier-mutations.mjs",
     "verify:pins": "node scripts/sync-std.mjs --verify && node scripts/sync-vectors.mjs --verify && node scripts/sync-sample-suite.mjs --verify",
     "conformance:core": "node conformance/run.mjs conformance/vectors",

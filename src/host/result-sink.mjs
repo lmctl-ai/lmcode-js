@@ -24,53 +24,54 @@ function decodeUtf8(value, path) {
   catch { throw invalid(path, 'utf8'); }
 }
 function encode(value, path = '') {
-  if (value === VOID || value === null || value === nullValue || value instanceof DryNull) return nullValue;
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'bigint') {
-    if (value > safe || value < -safe) throw invalid(path, 'unsafe_integer');
-    return value;
-  }
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw invalid(path, 'nonfinite');
-    if (Number.isInteger(value) && Math.abs(value) > Number(safe)) throw invalid(path, 'unsafe_integer');
-    return Object.is(value, -0) ? 0 : value;
-  }
-  if (typeof value === 'string') {
-    return decodeUtf8(value, path);
-  }
-  if (value instanceof VmObject) {
-    const handle = value.value;
-    if (value.type === 'Json' && handle?.__lmcodeJson) return fromJsonNode(handle.data, path);
-    if (['StrList', 'IntList', 'FloatList'].includes(value.type) && handle?.__lmcodeCollection) {
-      const out = new JsonArray();
-      for (let i = 0; i < handle.data.values.length; i++) out.push(encode(handle.data.values[i], pointer(path, i)));
-      return out;
+  let result;
+  const active = new Set();
+  const work = [{ value, path, assign: (child) => { result = child; } }];
+  while (work.length) {
+    const frame = work.pop();
+    if (frame.iterator) {
+      const next = frame.iterator.next();
+      if (next.done) { active.delete(frame.source); continue; }
+      const [key, child] = next.value;
+      const normalized = frame.array ? key : typeof key === 'string' ? decodeUtf8(key, frame.path) : String(key);
+      work.push(frame);
+      work.push({ value: child, path: pointer(frame.path, normalized), assign: (owned) => {
+        if (frame.array) frame.out.push(owned); else frame.out.set(normalized, owned);
+      } });
+      continue;
     }
-    if (['StrMap', 'IntMap', 'FloatMap'].includes(value.type) && handle?.__lmcodeCollection) {
-      const out = new JsonObject();
-      for (const entry of handle.data.entries) {
-        const key = decodeUtf8(entry.key, path);
-        out.set(key, encode(entry.value, pointer(path, key)));
-      }
-      return out;
+    const { value: item, path: at, assign } = frame;
+    if (item === VOID || item === null || item === nullValue || item instanceof DryNull) { assign(nullValue); continue; }
+    if (typeof item === 'boolean') { assign(item); continue; }
+    if (typeof item === 'bigint') {
+      if (item > safe || item < -safe) throw invalid(at, 'unsafe_integer');
+      assign(item); continue;
     }
-    throw invalid(path, 'handle');
-  }
-  if (Array.isArray(value)) {
-    const out = new JsonArray();
-    for (let i = 0; i < value.length; i++) out.push(encode(value[i], pointer(path, i)));
-    return out;
-  }
-  if (value instanceof Map || value instanceof JsonObject) {
-    const out = new JsonObject();
-    const entries = value instanceof Map ? value.entries() : value.entries();
-    for (const [key, child] of entries) {
-      const normalized = typeof key === 'string' ? decodeUtf8(key, path) : String(key);
-      out.set(normalized, encode(child, pointer(path, normalized)));
+    if (typeof item === 'number') {
+      if (!Number.isFinite(item)) throw invalid(at, 'nonfinite');
+      if (Number.isInteger(item) && Math.abs(item) > Number(safe)) throw invalid(at, 'unsafe_integer');
+      assign(Object.is(item, -0) ? 0 : item); continue;
     }
-    return out;
+    if (typeof item === 'string') { assign(decodeUtf8(item, at)); continue; }
+    let values; let array = false;
+    if (item instanceof VmObject) {
+      const handle = item.value;
+      if (item.type === 'Json' && handle?.__lmcodeJson) { assign(fromJsonNode(handle.data, at)); continue; }
+      if (['StrList', 'IntList', 'FloatList'].includes(item.type) && handle?.__lmcodeCollection) {
+        values = handle.data.values.entries(); array = true;
+      } else if (['StrMap', 'IntMap', 'FloatMap'].includes(item.type) && handle?.__lmcodeCollection) {
+        values = (function* () { for (const entry of handle.data.entries) yield [entry.key, entry.value]; })();
+      } else throw invalid(at, 'handle');
+    } else if (Array.isArray(item)) { values = item.entries(); array = true; }
+    else if (item instanceof Map || item instanceof JsonObject) values = item.entries();
+    else throw invalid(at, 'handle');
+    if (active.has(item)) throw invalid(at, 'cycle');
+    active.add(item);
+    const out = array ? new JsonArray() : new JsonObject();
+    assign(out);
+    work.push({ iterator: values, source: item, array, out, path: at });
   }
-  throw invalid(path, 'handle');
+  return result;
 }
 // Shared with invocation metadata before numeric token spellings are discarded.
 export function jsonNumber(node, path) {
@@ -97,14 +98,36 @@ function fromJsonNode(node, path) {
   throw invalid(path, 'handle');
 }
 export function stringifyResult(value) {
-  if (value === nullValue) return 'null';
-  if (typeof value === 'bigint') return value.toString();
-  if (typeof value === 'number') return formatFloat(value);
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  if (typeof value === 'string') return quote(value);
-  if (Array.isArray(value)) return `[${value.map(stringifyResult).join(',')}]`;
-  if (value instanceof JsonObject) return `{${[...value.entries()].map(([key, v]) => `${quote(key)}:${stringifyResult(v)}`).join(',')}}`;
-  return 'null';
+  const output = [];
+  const active = new Set();
+  const work = [{ value }];
+  while (work.length) {
+    const frame = work.pop();
+    if (frame.iterator) {
+      const next = frame.iterator.next();
+      if (next.done) { output.push(frame.array ? ']' : '}'); active.delete(frame.source); continue; }
+      if (!frame.first) output.push(',');
+      frame.first = false;
+      const [key, child] = next.value;
+      if (!frame.array) output.push(quote(key), ':');
+      work.push(frame, { value: child });
+      continue;
+    }
+    const item = frame.value;
+    if (item === nullValue) output.push('null');
+    else if (typeof item === 'bigint') output.push(item.toString());
+    else if (typeof item === 'number') output.push(formatFloat(item));
+    else if (typeof item === 'boolean') output.push(item ? 'true' : 'false');
+    else if (typeof item === 'string') output.push(quote(item));
+    else if (Array.isArray(item) || item instanceof JsonObject) {
+      if (active.has(item)) throw invalid('', 'cycle');
+      active.add(item);
+      const array = Array.isArray(item);
+      output.push(array ? '[' : '{');
+      work.push({ iterator: item.entries(), source: item, array, first: true });
+    } else output.push('null');
+  }
+  return output.join('');
 }
 
 export class ResultSink {
