@@ -1,0 +1,3 @@
+let s = str_repeat("a", 12000000);
+let t = str_replace(s, "a", "b");
+print(str(str_len(t)));

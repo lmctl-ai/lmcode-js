@@ -5,7 +5,9 @@ import { makeHandle } from './collections.mjs';
 const host = (message) => { throw new LmcodeError('RUN_HOST', message); };
 const textPath = (value, functionName) => {
   if (value.includes('\0')) host(`${functionName}: ${value}: invalid path`);
-  try { return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(value, 'latin1')); }
+  const bytes = Buffer.from(value, 'latin1');
+  if (process.platform !== 'win32') return bytes;
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
   catch { host(`${functionName}: ${value}: invalid path`); }
 };
 function regularPath(name, functionName, allowMissing = false) {

@@ -18,7 +18,7 @@ function parseFloat64(text) {
   const re = /^[+-]?(?:(?:[0-9]+(?:\.[0-9]*)?)|(?:\.[0-9]+))(?:[eE][+-]?[0-9]+)?$/;
   if (!re.test(text)) return null;
   let nonzero = false;
-  for (const c of text) if (c >= '1' && c <= '9') { nonzero = true; break; }
+  for (const c of text.split(/[eE]/, 1)[0]) if (c >= '1' && c <= '9') { nonzero = true; break; }
   const value = Number(text);
   if (!Number.isFinite(value) || (value === 0 && nonzero)) return null;
   return value;
@@ -87,8 +87,12 @@ export function registerString(reg) {
   fn('str_repeat', ['string', 'int'], 'string', (s, count) => {
     if (count < 0n) throw host('str_repeat: count must be nonnegative');
     const length = BigInt(s.length) * count;
-    if (length > maxStringLength) throw host('str_repeat: result exceeds platform string size');
-    return s.repeat(Number(count));
+    if (length > maxStringLength) throw host('str_repeat: result size exceeds platform capacity');
+    try { return s.repeat(Number(count)); }
+    catch (error) {
+      if (error instanceof RangeError) throw host('str_repeat: allocation failed');
+      throw error;
+    }
   });
   fn('str_to_int', ['string'], 'int', (s) => parseInt64(s) ?? 0n);
   fn('str_is_int', ['string'], 'bool', (s) => parseInt64(s) !== null);
@@ -97,10 +101,29 @@ export function registerString(reg) {
   fn('str_find', ['string', 'string'], 'int', (s, n) => BigInt(s.indexOf(n)));
   fn('str_replace', ['string', 'string', 'string'], 'string', (s, from, to) => {
     if (!from) return s;
-    const matches = s.split(from).length - 1;
+    if (from === to) return s;
+    let matches = 0;
+    for (let at = s.indexOf(from); at >= 0; at = s.indexOf(from, at + from.length)) matches++;
+    if (!matches) return s;
     const size = BigInt(s.length) + BigInt(matches) * (BigInt(to.length) - BigInt(from.length));
-    if (size < 0n || size > maxStringLength) throw host('str_replace: result exceeds platform string size');
-    return s.split(from).join(to);
+    if (size < 0n || size > maxStringLength) throw host('str_replace: result size exceeds platform capacity');
+    try {
+      // Allocate the actual result bytes, not an array entry per match. The
+      // latter can exhaust the JS heap for a small result with many matches.
+      const output = Buffer.allocUnsafe(Number(size));
+      const input = bytes(s); const replacement = bytes(to);
+      let start = 0; let offset = 0;
+      for (let at = s.indexOf(from); at >= 0; at = s.indexOf(from, start)) {
+        offset += input.copy(output, offset, start, at);
+        offset += replacement.copy(output, offset);
+        start = at + from.length;
+      }
+      input.copy(output, offset, start);
+      return output.toString('latin1');
+    } catch (error) {
+      if (error instanceof RangeError || error.code === 'ERR_MEMORY_ALLOCATION_FAILED') throw host('str_replace: allocation failed');
+      throw error;
+    }
   });
   fn('str_match', ['string', 'string'], 'bool', (s, pattern) => globMatch(s, pattern));
 }

@@ -114,6 +114,7 @@ export function registerCollections(reg, schema) {
       m('push', [valueType, 'float'], type, (self, value, priority) => {
         const data = check(reg, self, type, 'push');
         if (!Number.isFinite(priority)) host(`${type}.push: priority must be finite`);
+        if (data.next >= (1n << 63n) - 1n) host(`${type}.push: insertion sequence exhausted`);
         data.items.push({ value, priority, seq: data.next++ }); return self;
       });
       m('pop', [], valueType, (self) => {

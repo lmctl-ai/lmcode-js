@@ -186,16 +186,16 @@ export function registerJson(reg) {
   });
   method('method Json.get(string) -> Json', (self, key) => {
     const n = live(reg, self, 'get'); if (n.kind !== 'object') host('Json.get: expected object');
-    const item = n.members.find((m) => m.key === key); if (!item) host('Json.get: missing key');
+    const item = n.members.find((m) => Buffer.from(m.key, 'utf8').toString('latin1') === key); if (!item) host('Json.get: missing key');
     return childHandle(reg, item.value);
   });
   method('method Json.has(string) -> bool', (self, key) => {
     const n = live(reg, self, 'has'); if (n.kind !== 'object') host('Json.has: expected object');
-    return n.members.some((m) => m.key === key);
+    return n.members.some((m) => Buffer.from(m.key, 'utf8').toString('latin1') === key);
   });
   method('method Json.keys() -> StrList', (self) => {
     const n = live(reg, self, 'keys'); if (n.kind !== 'object') host('Json.keys: expected object');
-    const list = makeHandle(reg, 'StrList'); list.data.values = n.members.map((m) => m.key); return list;
+    const list = makeHandle(reg, 'StrList'); list.data.values = n.members.map((m) => Buffer.from(m.key, 'utf8').toString('latin1')); return list;
   });
   method('method Json.as_string() -> string', (self) => { const n=live(reg,self,'as_string'); if(n.kind!=='string')host('Json.as_string: expected string'); return Buffer.from(n.value, 'utf8').toString('latin1'); });
   method('method Json.as_int() -> int', (self) => { const n=live(reg,self,'as_int'); if(n.kind!=='int')host('Json.as_int: expected int'); return n.value; });
