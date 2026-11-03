@@ -3,19 +3,19 @@ import path from 'node:path';
 import { LmcodeError } from '../core/errors.mjs';
 import { parseJsonBytes } from '../std/json.mjs';
 import { ResultContract } from './result-contract.mjs';
-import { ResultSink, stringifyResult } from './result-sink.mjs';
+import { ResultSink, stringifyResult, jsonNumber } from './result-sink.mjs';
 
 const cliError = (message) => new LmcodeError('CLI_USAGE', `lmcode invocation: ${message}`);
-function native(node) {
-  if (node.kind === 'null') return null;
+function native(node, pointer = '') {
+  if (!node || node.kind === 'null') return null;
   if (node.kind === 'bool' || node.kind === 'string') return node.value;
-  if (node.kind === 'int' || node.kind === 'float') return node.value;
-  if (node.kind === 'array') return node.items.map(native);
-  if (node.kind === 'object') return Object.fromEntries(node.members.map((m) => [m.key, native(m.value)]));
+  if (node.kind === 'int' || node.kind === 'float') return jsonNumber(node, pointer);
+  if (node.kind === 'array') return node.items.map((item, index) => native(item, `${pointer}/${index}`));
+  if (node.kind === 'object') return Object.fromEntries(node.members.map((m) => [m.key, native(m.value, `${pointer}/${m.key.replaceAll('~', '~0').replaceAll('/', '~1')}`)]));
   return undefined;
 }
 function parseManifest(bytes) {
-  try { return native(parseJsonBytes(Buffer.from(bytes).toString('latin1'))); }
+  try { return parseJsonBytes(Buffer.from(bytes).toString('latin1')); }
   catch (error) {
     let message = error.message;
     if (message === 'json_parse: BOM is not allowed at byte 0') message = 'JSON BOM is not allowed';
@@ -85,8 +85,26 @@ export class InvocationResults {
     return new InvocationResults({ builder: files.length > 1, dry: false, registrations });
   }
   static fromMetadata(raw, files) {
-    const data = manifestMetadata(parseManifest(raw), files);
-    return new InvocationResults({ builder: data.mode === 'builder', dry: data.dry, registrations: data.registrations });
+    let dry = false;
+    try {
+      const root = parseManifest(raw);
+      if (root.kind !== 'object') throw cliError('object required');
+      const member = (name) => root.members.find((m) => m.key === name)?.value;
+      // Match the collectors: validate version first, then establish the dry
+      // marker before validating every remaining value and registration.
+      if (integer(native(member('version'), '/version')) !== 1n) throw cliError('unsupported version');
+      const mode = member('mode');
+      if (mode?.kind !== 'string' || !['single', 'builder'].includes(mode.value)) throw cliError('invalid mode');
+      const flag = member('dry');
+      if (flag?.kind !== 'bool') throw cliError('dry must be boolean');
+      dry = flag.value;
+      const data = manifestMetadata(native(root), files);
+      return new InvocationResults({ builder: data.mode === 'builder', dry: data.dry, registrations: data.registrations });
+    } catch (error) {
+      const failure = error instanceof LmcodeError && error.code === 'CLI_USAGE' ? error : cliError(error.message);
+      if (dry) failure.invocationDry = true;
+      throw failure;
+    }
   }
   dryMode() { return this.dry; }
   registrationsCopy() { return this.registrations.map((r) => ({ ...r })); }
@@ -143,7 +161,7 @@ export class InvocationResults {
 
 export function resultContractFromSchema(schemaBytes) { return ResultContract.fromSchema(schemaBytes); }
 export function failureFrame(phase, error) {
-  const results = new InvocationResults({ builder: false, dry: false, registrations: [] });
+  const results = new InvocationResults({ builder: false, dry: error?.invocationDry === true, registrations: [] });
   results.fail(null, phase, error);
   return results.writeFrame();
 }

@@ -72,13 +72,17 @@ function encode(value, path = '') {
   }
   throw invalid(path, 'handle');
 }
-function fromJsonNode(node, path) {
-  if (node.kind === 'null') return nullValue;
+// Shared with invocation metadata before numeric token spellings are discarded.
+export function jsonNumber(node, path) {
   if (node.kind === 'int' && (node.value > safe || node.value < -safe)) throw invalid(path, 'unsafe_integer');
   if (node.kind === 'float' && Number.isInteger(node.value) && Math.abs(node.value) > Number(safe)) throw invalid(path, 'unsafe_integer');
   if (node.kind === 'float' && node.value === 0 && /[1-9]/.test(node.raw.replace(/[eE].*/, '').replace(/[^0-9]/g, ''))) throw invalid(path, 'underflow');
-  if (node.kind === 'bool' || node.kind === 'int') return node.value;
-  if (node.kind === 'float') return Object.is(node.value, -0) ? 0 : node.value;
+  return Object.is(node.value, -0) ? 0 : node.value;
+}
+function fromJsonNode(node, path) {
+  if (node.kind === 'null') return nullValue;
+  if (node.kind === 'bool') return node.value;
+  if (node.kind === 'int' || node.kind === 'float') return jsonNumber(node, path);
   if (node.kind === 'string') return node.value;
   if (node.kind === 'array') {
     const out = new JsonArray();
