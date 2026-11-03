@@ -6,7 +6,9 @@ import { fileURLToPath } from 'node:url';
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const source = path.resolve(process.env.LMCODE_CPP_DIR ?? path.join(root, '..', 'lmcode-cpp'));
-export const sourceCommit = execFileSync('git', ['-C', source, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+export function sourceHead() {
+  return execFileSync('git', ['-C', source, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+}
 export const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 export async function treeDigest(directory) {

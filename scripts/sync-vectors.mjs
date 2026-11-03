@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { copyTree, root, sha256, sourceCommit, treeDigest, writePin } from './sync-common.mjs';
+import { copyTree, root, sha256, sourceHead, treeDigest, writePin } from './sync-common.mjs';
 
 const suites = ['vectors', 'stdlib-vectors', 'return-vectors', 'invocation-vectors'];
 if (process.argv[2] === '--verify') {
@@ -14,6 +14,7 @@ if (process.argv[2] === '--verify') {
     console.log(`conformance/${suite} matches ${text.match(/^commit=(.+)$/m)?.[1] ?? 'unknown commit'}`);
   }
 } else {
+  const sourceCommit = sourceHead();
   for (const suite of suites) {
     await copyTree(path.join('conformance', suite));
     const digest = await treeDigest(path.join(root, 'conformance', suite));

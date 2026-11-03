@@ -5,8 +5,6 @@ import { root, sha256, source, writePin } from './sync-common.mjs';
 
 const schemaRel = 'std/lmcode-std.schema.json';
 const docsRel = 'std/lmcode-std.docs.json';
-const schemaCommit = execFileSync('git', ['-C', source, 'log', '-1', '--format=%H', '--', schemaRel], { encoding: 'utf8' }).trim();
-const docsCommit = execFileSync('git', ['-C', source, 'log', '-1', '--format=%H', '--', docsRel], { encoding: 'utf8' }).trim();
 if (process.argv[2] === '--verify') {
   for (const [rel, lockName] of [[schemaRel, 'std.lock'], [docsRel, 'std-docs.lock']]) {
     const bytes = await readFile(path.join(root, rel));
@@ -16,6 +14,8 @@ if (process.argv[2] === '--verify') {
     console.log(`${rel} matches ${lockText.match(/^commit=(.+)$/m)?.[1] ?? 'its lock'}`);
   }
 } else {
+  const schemaCommit = execFileSync('git', ['-C', source, 'log', '-1', '--format=%H', '--', schemaRel], { encoding: 'utf8' }).trim();
+  const docsCommit = execFileSync('git', ['-C', source, 'log', '-1', '--format=%H', '--', docsRel], { encoding: 'utf8' }).trim();
   await mkdir(path.join(root, 'std'), { recursive: true });
   for (const [commit, rel] of [[schemaCommit, schemaRel], [docsCommit, docsRel]]) {
     if (!commit) throw new Error(`canonical source has no commit for ${rel}`);
