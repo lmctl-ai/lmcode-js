@@ -1,0 +1,8 @@
+*.mjs text eol=lf
+*.d.ts text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.lms text eol=lf
+*.dslb binary
+*.bin binary
+*.out binary

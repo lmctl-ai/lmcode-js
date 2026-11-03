@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install compiler locally
+        run: npm install --no-save --package-lock=false @lmctl-ai/lmctl@latest
+      - name: Verify canonical pins
+        run: npm run verify:pins
+      - name: Unit and mutation tests
+        run: npm test
+      - name: Verifier mutation controls
+        run: npm run mutation
+      - name: Full conformance
+        run: npm run conformance
+      - name: Sample suite
+        run: npm run sample-suite
