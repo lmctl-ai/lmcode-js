@@ -1,0 +1,35 @@
+{
+  "name": "@lmctl-ai/lmcode-js",
+  "version": "0.1.0",
+  "description": "Pure ESM JavaScript runtime for lmcode bytecode",
+  "types": "./src/index.d.ts",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.mjs"
+    },
+    "./core": "./src/core/index.mjs",
+    "./host": "./src/host/index.mjs",
+    "./std": "./src/std/index.mjs"
+  },
+  "bin": {
+    "lmcode-js-sample": "./sample/main.mjs"
+  },
+  "scripts": {
+    "test": "node --test test",
+    "mutation": "node scripts/test-verifier-mutations.mjs",
+    "verify:pins": "node scripts/sync-std.mjs --verify && node scripts/sync-vectors.mjs --verify && node scripts/sync-sample-suite.mjs --verify",
+    "conformance:core": "node conformance/run.mjs conformance/vectors",
+    "conformance:stdlib": "node conformance/run.mjs conformance/stdlib-vectors",
+    "conformance:return": "node conformance/return-run.mjs",
+    "conformance:invocation": "node conformance/invocation-run.mjs",
+    "conformance": "npm run conformance:core && npm run conformance:stdlib && npm run conformance:return && npm run conformance:invocation",
+    "sample-suite": "node sample-suite/run-all.mjs",
+    "check": "npm run verify:pins && npm test && npm run mutation && npm run conformance && npm run sample-suite"
+  },
+  "license": "MIT"
+}
