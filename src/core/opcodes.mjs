@@ -1,0 +1,17 @@
+export const Op = Object.freeze({
+  PUSH_INT: 0x01, PUSH_STR: 0x02, PUSH_BOOL: 0x03, LOAD_LOCAL: 0x04, STORE_LOCAL: 0x05,
+  LOAD_CTX: 0x06, CALL_FN: 0x07, CALL_METHOD: 0x08, EQ: 0x09, NE: 0x0a, NOT: 0x0b,
+  JUMP: 0x0c, JUMP_IF_FALSE: 0x0d, JUMP_IF_TRUE: 0x0e, DUP: 0x0f, POP: 0x10, HALT: 0x11,
+  PUSH_FLOAT: 0x12, ADD_I: 0x13, SUB_I: 0x14, MUL_I: 0x15, DIV_I: 0x16,
+  ADD_F: 0x17, SUB_F: 0x18, MUL_F: 0x19, DIV_F: 0x1a, NEG_I: 0x1b, NEG_F: 0x1c,
+  LT_I: 0x1d, LE_I: 0x1e, GT_I: 0x1f, GE_I: 0x20, LT_F: 0x21, LE_F: 0x22,
+  GT_F: 0x23, GE_F: 0x24, I2F: 0x25, CONCAT: 0x26, I2S: 0x27, F2S: 0x28,
+  B2S: 0x29, FOR_RANGE: 0x2f, FOR_NEXT: 0x31, MATH: 0x32, MOD_I: 0x33,
+  WHILE_BEGIN: 0x34, WHILE_TEST: 0x35, LOOP_BACK: 0x36,
+});
+
+export const MathFn = Object.freeze({
+  SIN_F: 0, COS_F: 1, SQRT_F: 2, ABS_F: 3, FLOOR_F: 4, POW_F: 5, MIN_F: 6, MAX_F: 7,
+  CLAMP_F: 8, LERP_F: 9, EASE_F: 10, EASE_IN_F: 11, EASE_OUT_F: 12, INT_F: 13,
+  ABS_I: 14, MIN_I: 15, MAX_I: 16, CLAMP_I: 17,
+});
