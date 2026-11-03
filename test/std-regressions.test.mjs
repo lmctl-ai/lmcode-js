@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createRegistry, LmcodeError } from '../src/index.mjs';
@@ -39,6 +39,16 @@ test('file paths preserve Unix bytes and reject invalid Windows UTF-8', () => {
   try {
     if (process.platform === 'win32') {
       assert.throws(() => write('one'), hostError);
+      return;
+    }
+    // Unix paths are native bytes; a particular filesystem may still reject
+    // them (APFS reports EILSEQ). Compare to the same native operation rather
+    // than assuming every Unix filesystem permits every non-NUL byte.
+    let nativeError;
+    try { writeFileSync(Buffer.from(name, 'latin1'), 'native'); } catch (error) { nativeError = error; }
+    if (nativeError) {
+      assert.equal(nativeError.code, 'EILSEQ');
+      assert.throws(() => write('one'), (e) => hostError(e) && e.message.includes('EILSEQ') && !e.message.endsWith(': invalid path'));
       return;
     }
     write('one');
