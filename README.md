@@ -30,7 +30,7 @@ Host callbacks receive lossless `BigInt` values by default. Set `{ ints: 'number
 
 ## Host results, invocation and dry mode
 
-The `ResultSink` copies values into owned JSON data and validates any result contract. `InvocationResults` reads the private version 1 manifest from `LMCODE_INVOCATION_FILE`, assigns each program an independent sink, and emits one terminal frame only after dispatch and application checks finish.
+The `ResultSink` copies values into owned JSON data and validates any result contract. Host arrays/maps are copied and serialized iteratively, so deep finite results do not consume the native call stack; cycles fail with `RUN_HOST` without changing the previous result. `InvocationResults` reads the private version 1 manifest from `LMCODE_INVOCATION_FILE`, assigns each program an independent sink, and emits one terminal frame only after dispatch and application checks finish.
 
 ```js
 import { Context, InvocationResults, Program, createRegistry, resultContractFromSchema } from '@lmctl-ai/lmcode-js';
@@ -53,9 +53,9 @@ In dry mode, callbacks without an override are skipped and return a typed dummy;
 
 ## Bytecode and standard catalog
 
-The loader verifies schema hashes, imports, context declarations, all code-region instruction boundaries, loop pairing and boundaries, hidden-local stores, duplicate entry names, and reachable stack depths before execution. Wire counts are consumed incrementally; the runtime does not preallocate arrays from untrusted counts. There is no instruction deadline, fixed string byte ceiling, matcher-work budget, or live object quota. String allocations retain only the actual Node platform string-length guard.
+The loader verifies schema hashes, imports, context declarations, all code-region instruction boundaries, loop pairing and boundaries, hidden-local stores, duplicate entry names, and reachable stack depths before execution. Wire counts are consumed incrementally; the runtime does not preallocate arrays from untrusted counts. There is no instruction deadline, fixed string byte ceiling, matcher-work budget, or live object quota. String allocations retain only the actual Node platform string-length guard. Replacement scans matches into the result byte buffer without allocating an array per match. Catchable allocation failures become `RUN_HOST`. Fatal V8 heap exhaustion and operating-system process termination cannot be caught by this synchronous, in-process SDK; universal abort containment requires an external process boundary, not an implicit runtime quota.
 
-The standard catalog covers strings and byte codecs, math, files, lists/maps/stacks/queues/priority queues, strict JSON access, text templates, and result operations. String matching uses constant auxiliary memory without a work budget. JSON parsing and template nesting follow the shared 256-level parser/render guard.
+The standard catalog covers strings and byte codecs, math, files, lists/maps/stacks/queues/priority queues, strict JSON access, text templates, and result operations. String matching uses constant auxiliary memory without a work budget. JSON parsing and template nesting follow the shared 256-level parser/render guard. JSON keys cross the host boundary as UTF-8 byte strings, and file paths preserve native bytes on Unix while requiring strict UTF-8 on Windows.
 
 ## Sample CLI host
 
@@ -81,6 +81,6 @@ npm run conformance
 npm run sample-suite
 ```
 
-`npm run conformance` runs all core, standard, result-frame and invocation vectors. The sample suite checks the CLI protocol, compiler rejection cases, and exact stdout/exit bytes for every canonical Shop/Ledger case. CI uses the latest published `@lmctl-ai/lmctl` compiler and runs the same gates on Ubuntu, macOS and Windows with Node 22 and 24.
+`npm run conformance` runs all core, standard, result-frame and invocation vectors, including the 29 exact-byte malformed-metadata cases through the sample CLI. The sample suite checks the CLI protocol, compiler rejection cases, and exact stdout/exit bytes for every canonical Shop/Ledger case. CI uses the latest published `@lmctl-ai/lmctl` compiler and runs the same gates on Ubuntu, macOS and Windows with Node 22 and 24.
 
 The package is prepared for a future npm release, but CI does not publish it. There are no native install steps or global links.
