@@ -1,9 +1,9 @@
 {
- "version": 1,
+ "version": 2,
  "options": {
   "max_body_bytes": 1024
  },
- "scenarios": [
+ "stream": [
   {
    "name": "health json",
    "method": "GET",
@@ -334,14 +334,37 @@
    }
   },
   {
-   "name": "rest_port() reports the bound port",
+   "name": "responses are Content-Length framed and never say Connection",
    "method": "GET",
-   "target": "/port",
+   "target": "/health",
    "expect": {
     "status": 200,
-    "body": "$PORT"
+    "headers": {
+     "connection": null
+    }
    }
   },
+  {
+   "name": "rest_stop() from a handler",
+   "method": "POST",
+   "target": "/shutdown",
+   "stops_server": true,
+   "expect": {
+    "status": 202,
+    "body": "bye"
+   }
+  },
+  {
+   "name": "requests after rest_stop() are never answered",
+   "method": "GET",
+   "target": "/health",
+   "unanswered": true,
+   "expect": {
+    "status": 0
+   }
+  }
+ ],
+ "fatal": [
   {
    "name": "malformed request line is 400",
    "method": "GET",
@@ -395,27 +418,20 @@
      "content-type": "application/json"
     }
    }
+  }
+ ],
+ "silent": [
+  {
+   "name": "empty input ends serving cleanly",
+   "raw": ""
   },
   {
-   "name": "every response closes the connection",
-   "method": "GET",
-   "target": "/health",
-   "expect": {
-    "status": 200,
-    "headers": {
-     "connection": "close"
-    }
-   }
+   "name": "a request truncated by EOF is dropped without a response",
+   "raw": "GET /hea"
   },
   {
-   "name": "rest_stop() from a handler",
-   "method": "POST",
-   "target": "/shutdown",
-   "stops_server": true,
-   "expect": {
-    "status": 202,
-    "body": "bye"
-   }
+   "name": "a body truncated by EOF is dropped without a response",
+   "raw": "POST /sum HTTP/1.1\r\nContent-Length: 10\r\n\r\n{\"v"
   }
  ]
 }

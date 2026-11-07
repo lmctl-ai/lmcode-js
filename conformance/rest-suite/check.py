@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Integrity check of the shared REST suite (runs in the spec repo's CI, no runtime needed).
 
-* host.schema.json is byte-identical to std/rest/lmcode-rest.schema.json and declares exactly 20 signatures + RestHandler;
+* host.schema.json is byte-identical to std/rest/lmcode-rest.schema.json and declares exactly 18 signatures + RestHandler;
 * app.dslb is DSLB v6, bound to sha256(host.schema.json), imports only declared/std names, and its RestHandler entries
   are exactly the annotations app.lms routes to;
 * scenarios.json is well formed and ends with the rest_stop() scenario.
@@ -18,7 +18,7 @@ if schema_bytes != read(root, 'std', 'rest', 'lmcode-rest.schema.json'): fail('h
 schema = json.loads(schema_bytes)
 sigs = [f'fn {n}({", ".join(d["params"])}) -> {d["returns"]}' for n, ds in schema['functions'].items() for d in ds]
 sigs += [f'method {t}.{n}({", ".join(d["params"])}) -> {d["returns"]}' for t, td in schema['types'].items() for n, ds in td['methods'].items() for d in ds]
-if len(sigs) != 20: fail(f'expected 20 signatures, found {len(sigs)}')
+if len(sigs) != 18: fail(f'expected 18 signatures, found {len(sigs)}')
 if schema['interfaces'] != {'RestHandler': {'params': [{'name': 'exchange', 'type': 'RestExchange'}], 'returns': 'void'}}: fail('interface RestHandler changed')
 
 code = read(here, 'app.dslb')
@@ -35,7 +35,7 @@ imports = [consts[struct.unpack('>I', code[pos + 4 * i:pos + 4 * i + 4])[0]] for
 std = {'fn str_is_int(string) -> bool', 'fn str_to_int(string) -> int', 'fn json_parse(string) -> Json', 'method Json.get(string) -> Json', 'method Json.len() -> int', 'method Json.at(int) -> Json', 'method Json.as_int() -> int'}
 for imp in imports:
     if imp not in sigs and imp not in std and not imp.startswith('fn str('): fail(f'unexpected import {imp}')
-for needed in ('fn rest_route(string, string, string) -> void', 'fn rest_listen(int) -> int', 'fn rest_stop() -> void', 'fn rest_port() -> int'):
+for needed in ('fn rest_route(string, string, string) -> void', 'fn rest_serve() -> void', 'fn rest_stop() -> void'):
     if needed not in imports: fail(f'program does not import {needed}')
 # Every `implements RestHandler` function in app.lms is routed exactly once by annotation name.
 source = read(here, 'app.lms').decode()
@@ -45,11 +45,12 @@ if sorted(set(annotated)) != sorted(set(routed)) or len(annotated) != len(set(an
 if f'interface RestHandler(RestExchange) -> void' not in consts: fail('entry interface text missing from the bytecode constants')
 
 doc = json.loads(read(here, 'scenarios.json'))
-if doc['version'] != 1 or doc['options'] != {'max_body_bytes': 1024}: fail('scenario options changed')
-names = [s['name'] for s in doc['scenarios']]
-if len(names) != 37 or len(set(names)) != 37: fail('expected 37 uniquely named scenarios')
-if not doc['scenarios'][-1].get('stops_server'): fail('the last scenario must stop the server')
-for s in doc['scenarios']:
+if doc['version'] != 2 or doc['options'] != {'max_body_bytes': 1024}: fail('scenario options changed')
+names = [s['name'] for g in ('stream', 'fatal', 'silent') for s in doc[g]]
+if len(names) != 40 or len(set(names)) != 40: fail(f'expected 40 uniquely named scenarios, found {len(names)}')
+stream = doc['stream']
+if not stream[-2].get('stops_server') or not stream[-1].get('unanswered'): fail('the stream must end with the rest_stop() scenario and an unanswered request')
+for s in stream + doc['fatal']:
     if not isinstance(s['expect']['status'], int): fail(f'{s["name"]}: status')
     if 'raw' not in s and not (s['target'].startswith('/') and s['method'].isupper()): fail(f'{s["name"]}: bad request line')
 
@@ -59,4 +60,4 @@ if '--rebuild' in sys.argv:
         for f in ('app.lms', 'host.schema.json', 'build.mjs'): open(os.path.join(copy, f), 'wb').write(read(here, f))
         subprocess.run(['node', os.path.join(copy, 'build.mjs'), os.environ.get('LMSCRIPT_BIN', 'lmscript')], check=True)
         if read(copy, 'app.dslb') != code: fail('app.dslb differs from a fresh compile of app.lms (run node build.mjs)')
-print(f'rest-suite ok: {len(sigs)} signatures, {len(imports)} imports, {len(names)} scenarios')
+print(f'rest-suite ok: {len(sigs)} signatures, {len(imports)} imports, {len(names)} scenarios (stream/fatal/silent)')

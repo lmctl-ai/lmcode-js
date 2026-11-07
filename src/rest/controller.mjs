@@ -1,10 +1,8 @@
-// The `rest` std module for lmcode-js: registration, the transport-independent dispatcher and the TCP transport.
-import net from 'node:net';
-import { MessageChannel, Worker, receiveMessageOnPort } from 'node:worker_threads';
+// The `rest` std module for lmcode-js: registration, the transport-independent dispatcher and the stdio pump.
 import { LmcodeError } from '../core/errors.mjs';
 import { VmObject, VOID } from '../core/values.mjs';
 import { RouteTable, percentDecode } from './router.mjs';
-import { encodeResponse, errorResponse } from './http.mjs';
+import { encodeResponse, errorResponse, takeRequest } from './http.mjs';
 
 export const HANDLER_INTERFACE = 'interface RestHandler(RestExchange) -> void';
 const RESERVED = new Set(['content-length', 'connection', 'transfer-encoding']);
@@ -26,77 +24,42 @@ class Exchange {
 export class RestController {
   constructor(registry, options = {}) {
     this.registry = registry;
+    this.input = options.input ?? process.stdin;
+    this.output = options.output ?? process.stdout;
     this.maxBodyBytes = options.maxBodyBytes ?? 1024 * 1024;
-    this.readTimeoutMs = options.readTimeoutMs ?? 10_000;
     this.onHandlerError = options.onHandlerError ?? ((entry, message) => process.stderr.write(`rest: handler ${entry} failed: ${message}\n`));
     this.state = { values: new Map(), counts: new Map() };
     this.table = new RouteTable();
     this.program = null; this.context = {}; this.entryIndex = new Map();
-    this.server = null; this.closedPromise = Promise.resolve();
+    this.serving = false; this.stopped = false;
   }
 
-  get listening() { return this.server !== null; }
-  /** The bound port, or 0 while not listening. */
-  get port() { return this.server?.port ?? 0; }
-  /** Resolves once the listener has fully stopped. */
-  get closed() { return this.closedPromise; }
-
-  /** Binds `program` and runs its body; the server (if the body called rest_listen) keeps serving afterwards. */
-  run(program, context = {}) {
-    this.program = program; this.context = context;
-    try { return program.run(context); } catch (error) { this.stop(); throw error; }
+  /**
+   * Binds `program`, runs its body, then (if the body called rest_serve and not rest_stop) serves the input stream
+   * until EOF, rest_stop() or a framing error. Resolves with the body's result.
+   */
+  async run(program, context = {}) {
+    this.program = program; this.context = context; this.stopped = false;
+    const result = program.run(context);
+    if (this.serving && !this.stopped) await this.#pump();
+    return result;
   }
 
   // ---- lmcode-facing operations -------------------------------------------------------------------------
   route(method, path, annotation) {
-    if (this.listening) throw host('rest: routes are frozen once the server is listening');
+    if (this.serving) throw host('rest: routes are frozen once rest_serve has been called');
     this.table.add(method, path, annotation);
   }
 
-  listen(address, port) {
-    if (this.listening) throw host('rest: server already listening');
-    if (!this.program) throw host('rest: no program is bound (run the program through RestController.run)');
-    if (port < 0 || port > 65535) throw host(`rest: port ${port} out of range 0..65535`);
-    if (address === 'localhost') address = '127.0.0.1';
-    if (net.isIP(address) === 0) throw host(`rest: cannot listen on ${address}:${port}: host must be an IP address or localhost`);
+  serve() {
+    if (this.serving) throw host('rest: rest_serve already called');
+    if (!this.program) throw host('rest: no program is bound (run the program through the controller)');
     this.#bind();
-    // The transport thread binds; the VM thread blocks here so rest_listen can return the bound port (or fail) synchronously.
-    const shared = new Int32Array(new SharedArrayBuffer(4));
-    const { port1: control, port2: controlWorker } = new MessageChannel();
-    const worker = new Worker(new URL('./transport-worker.mjs', import.meta.url), { workerData: { control: controlWorker, shared }, transferList: [controlWorker] });
-    worker.on('error', () => {});
-    worker.postMessage({ type: 'listen', host: address, port, maxBodyBytes: this.maxBodyBytes, readTimeoutMs: this.readTimeoutMs });
-    if (Atomics.wait(shared, 0, 0, 10_000) === 'timed-out') { worker.terminate(); throw host(`rest: cannot listen on ${address}:${port}: timed out`); }
-    const reply = receiveMessageOnPort(control)?.message;
-    control.close();
-    if (reply?.type !== 'listening') { worker.terminate(); throw host(`rest: cannot listen on ${address}:${port}: ${reply?.message ?? 'unknown error'}`); }
-    const transport = { worker, port: reply.port };
-    this.server = transport;
-    this.closedPromise = new Promise((resolve) => { transport.resolve = resolve; });
-    worker.on('message', (message) => {
-      if (message.type === 'request') {
-        const request = { ...message.request, body: Buffer.from(message.request.body) };
-        const response = this.dispatch(request);
-        worker.postMessage({ type: 'response', id: message.id, bytes: encodeResponse(response, { head: request.method === 'HEAD' }) });
-      } else if (message.type === 'closed') {
-        if (this.server === transport) this.server = null;
-        transport.resolve();
-      }
-    });
-    worker.on('exit', () => { if (this.server === transport) this.server = null; transport.resolve(); });
-    return reply.port;
+    this.serving = true;
   }
 
-  stop() {
-    const transport = this.server;
-    if (!transport) return this.closedPromise;
-    this.server = null;
-    transport.worker.postMessage({ type: 'stop' });
-    return this.closedPromise;
-  }
-
-  /** Stop listening and drop open connections. */
-  async close() { await this.stop(); }
+  /** Ends serving once the current response is written. */
+  stop() { this.stopped = true; }
 
   #bind() {
     if (!this.table.size) throw host('rest: no routes registered');
@@ -154,12 +117,30 @@ export class RestController {
     else if (body.length && !x.headers.has('content-type')) headers.unshift(['Content-Type', 'text/plain; charset=utf-8']);
     return { status: x.status, headers, body };
   }
+
+  async #pump() {
+    let buffer = Buffer.alloc(0);
+    const write = async (response, head) => {
+      if (!this.output.write(encodeResponse(response, { head }))) await new Promise((resolve) => this.output.once('drain', resolve));
+    };
+    for await (const chunk of this.input) {
+      buffer = Buffer.concat([buffer, chunk]);
+      for (;;) {
+        const taken = takeRequest(buffer, this.maxBodyBytes);
+        if (taken.need) break;
+        if (taken.fatal) { await write(errorResponse(taken.fatal), false); return; }
+        buffer = taken.rest;
+        await write(this.dispatch(taken.request), taken.request.method === 'HEAD');
+        if (this.stopped) return;
+      }
+    }
+  }
 }
 
 // ---- registration -------------------------------------------------------------------------------------------
 const exchangeOf = (x) => { if (!x) throw host('invalid exchange'); return x; };
 
-/** Registers the 20 `rest` signatures in `registry` and returns the controller that owns the server. */
+/** Registers the 18 `rest` signatures in `registry` and returns the controller that owns the server. */
 export function registerRest(registry, options = {}) {
   const controller = new RestController(registry, options);
   const raw = { internal: true };
@@ -167,10 +148,8 @@ export function registerRest(registry, options = {}) {
   const method = (signature, callback) => registry.method(signature, (x, ...args) => callback(exchangeOf(x), ...args), raw);
 
   fn('fn rest_route(string, string, string) -> void', (m, p, a) => { controller.route(m, p, a); });
-  fn('fn rest_listen(int) -> int', (port) => BigInt(controller.listen('127.0.0.1', Number(port))));
-  fn('fn rest_listen(string, int) -> int', (address, port) => BigInt(controller.listen(address, Number(port))));
+  fn('fn rest_serve() -> void', () => { controller.serve(); });
   fn('fn rest_stop() -> void', () => { controller.stop(); });
-  fn('fn rest_port() -> int', () => BigInt(controller.port));
 
   method('method RestExchange.method() -> string', (x) => x.request.method);
   method('method RestExchange.path() -> string', (x) => x.path);
@@ -185,7 +164,7 @@ export function registerRest(registry, options = {}) {
     x.status = Number(code);
   });
   method('method RestExchange.set_header(string, string) -> void', (x, name, value) => {
-    if (name === '' || /[\s:]/.test(name) || /[\r\n]/.test(value)) throw host('rest: invalid response header');
+    if (name === '' || /[\x00-\x20\x7f:]/.test(name) || /[\r\n]/.test(value)) throw host('rest: invalid response header');
     if (RESERVED.has(name.toLowerCase())) throw host(`rest: response header ${name} is managed by the server`);
     x.headers.set(name.toLowerCase(), [name, value]);
   });

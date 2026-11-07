@@ -134,31 +134,16 @@
         "returns": "void"
       }
     ],
-    "rest_listen": [
+    "rest_serve": [
       {
-        "params": [
-          "int"
-        ],
-        "returns": "int"
-      },
-      {
-        "params": [
-          "string",
-          "int"
-        ],
-        "returns": "int"
+        "params": [],
+        "returns": "void"
       }
     ],
     "rest_stop": [
       {
         "params": [],
         "returns": "void"
-      }
-    ],
-    "rest_port": [
-      {
-        "params": [],
-        "returns": "int"
       }
     ]
   },

@@ -4,7 +4,25 @@
 import { execFileSync } from 'node:child_process';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { root, treeDigest } from './sync-common.mjs';
+import { readdir } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { root } from './sync-common.mjs';
+
+// Portable tree digest: sha256 over rows "<sha256(file)>  <relative path>\n", paths sorted bytewise (C locale).
+// Reproducible in shell: (cd DIR && find . -type f -printf '%P\n' | LC_ALL=C sort | xargs sha256sum) | sha256sum
+async function treeDigest(dir) {
+  const rows = [];
+  const walk = async (d, prefix) => {
+    for (const e of await readdir(d, { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${e.name}` : e.name;
+      if (e.isDirectory()) await walk(path.join(d, e.name), rel);
+      else if (e.isFile()) rows.push([rel, createHash('sha256').update(await readFile(path.join(d, e.name))).digest('hex')]);
+    }
+  };
+  await walk(dir, '');
+  rows.sort(([a], [b]) => (Buffer.compare(Buffer.from(a), Buffer.from(b))));
+  return createHash('sha256').update(rows.map(([n, h]) => `${h}  ${n}\n`).join('')).digest('hex');
+}
 
 const spec = path.resolve(process.env.LMCODE_SPEC_DIR ?? path.join(root, '..', 'lmcode'));
 const destination = path.join(root, 'conformance', 'rest-suite');

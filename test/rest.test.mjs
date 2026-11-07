@@ -1,18 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import net from 'node:net';
+import { PassThrough } from 'node:stream';
 import { readFileSync } from 'node:fs';
 import { createRegistry } from '../src/std/index.mjs';
 import { VmObject } from '../src/core/values.mjs';
 import { registerRest, RouteTable, parseRoute, percentDecode, RestController } from '../src/rest/index.mjs';
-import { parseHead, bodyLength, encodeResponse } from '../src/rest/http.mjs';
-import { startSuiteServer, replay, suite, exchange, parseResponse } from '../conformance/rest-run.mjs';
+import { parseHead, bodyLength, encodeResponse, takeRequest } from '../src/rest/http.mjs';
+import { replay, suite, serveInMemory, serveProcess, newController, requestBytes, parseResponses } from '../conformance/rest-run.mjs';
 
 const schema = JSON.parse(readFileSync(new URL('../conformance/rest-suite/host.schema.json', import.meta.url), 'utf8'));
 const message = (re) => (e) => { assert.match(e.message, re); return true; };
 const HANDLER = 'interface RestHandler(RestExchange) -> void';
 const fakeProgram = (...entries) => ({ entries: entries.map(([annotation, iface = HANDLER, name = annotation]) => ({ annotation, iface, name })), call() {}, run() {} });
 const controllerWith = (program, options) => { const c = new RestController(createRegistry(), options); c.program = program; return c; };
+const GET = (target) => Buffer.from(`GET ${target} HTTP/1.1\r\nHost: x\r\n\r\n`);
 
 // ---- unit: routes -------------------------------------------------------------------------------------------
 test('route templates: valid shapes parse into literal, param and rest segments', () => {
@@ -27,6 +28,7 @@ test('route templates: invalid shapes are RUN_HOST errors with pinned text', () 
   bad('get', '/x', /rest: invalid route get \/x: method must be one of GET, POST/);
   bad('GET', 'x', /path must start with '\/'/);
   bad('GET', '/a b', /whitespace/);
+  assert.doesNotThrow(() => parseRoute('GET', '/caf\u00c3\u00a0'), 'UTF-8 bytes such as C3 A0 are not whitespace');
   bad('GET', '/a?b', /whitespace, control characters, \? or #/);
   bad('GET', '/a//b', /empty segment/);
   bad('GET', '/{1x}', /invalid parameter name '1x'/);
@@ -103,78 +105,72 @@ test('http: content-length rules', () => {
 
 test('http: response encoding', () => {
   const text = (bytes) => bytes.toString('latin1');
-  assert.equal(text(encodeResponse({ status: 200, headers: [['A', 'b']], body: Buffer.from('hi') })), 'HTTP/1.1 200 OK\r\nA: b\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi');
-  assert.equal(text(encodeResponse({ status: 299, headers: [], body: Buffer.from('hi') }, { head: true })), 'HTTP/1.1 299 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n');
+  assert.equal(text(encodeResponse({ status: 200, headers: [['A', 'b']], body: Buffer.from('hi') })), 'HTTP/1.1 200 OK\r\nA: b\r\nContent-Length: 2\r\n\r\nhi');
+  assert.equal(text(encodeResponse({ status: 299, headers: [], body: Buffer.from('hi') }, { head: true })), 'HTTP/1.1 299 OK\r\nContent-Length: 2\r\n\r\n');
 });
 
 // ---- unit: registration and exchange rules ------------------------------------------------------------------
-test('registration: exactly the 20 declared signatures, absent from the default registry', () => {
+test('registration: exactly the 18 declared signatures, absent from the default registry', () => {
   const declared = [
     ...Object.entries(schema.functions).flatMap(([n, ds]) => ds.map((d) => `fn ${n}(${d.params.join(', ')}) -> ${d.returns}`)),
     ...Object.entries(schema.types).flatMap(([t, def]) => Object.entries(def.methods).flatMap(([n, ds]) => ds.map((d) => `method ${t}.${n}(${d.params.join(', ')}) -> ${d.returns}`))),
   ].sort();
-  assert.equal(declared.length, 20);
+  assert.equal(declared.length, 18);
   const plain = createRegistry();
   assert.equal(plain.signatures().length, 206, 'default catalog is unchanged');
   assert.ok(!plain.signatures().some((s) => s.includes('rest_')));
   registerRest(plain);
   assert.deepEqual(plain.signatures().filter((s) => /rest_|RestExchange/.test(s)), declared);
-  assert.equal(plain.signatures().length, 226);
+  assert.equal(plain.signatures().length, 224);
 });
 
-test('listen validation happens before any socket is opened', () => {
+test('takeRequest: incremental framing, fatal errors and pipelined remainders', () => {
+  const full = Buffer.from('POST /a HTTP/1.1\r\nContent-Length: 3\r\n\r\nabcGET /b HTTP/1.1\r\n\r\n');
+  const one = takeRequest(full, 1024);
+  assert.equal(one.request.body.toString(), 'abc');
+  assert.equal(takeRequest(one.rest, 1024).request.target, '/b');
+  assert.deepEqual(takeRequest(Buffer.from('GET /a HTT'), 1024), { need: true });
+  assert.deepEqual(takeRequest(Buffer.from('POST /a HTTP/1.1\r\nContent-Length: 5\r\n\r\nab'), 1024), { need: true });
+  assert.deepEqual(takeRequest(Buffer.from('POST /a HTTP/1.1\r\nContent-Length: 2000\r\n\r\n'), 1024), { fatal: 413 });
+  assert.deepEqual(takeRequest(Buffer.alloc(20000, 97), 1024), { fatal: 431 });
+  assert.deepEqual(takeRequest(Buffer.from('nonsense\r\n\r\n'), 1024), { fatal: 400 });
+  assert.deepEqual(takeRequest(Buffer.from('POST /a HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n'), 1024), { fatal: 501 });
+});
+
+test('serve validation happens before any byte is read', () => {
   const none = controllerWith(fakeProgram());
-  assert.throws(() => none.listen('127.0.0.1', 0), message(/rest: no routes registered/));
+  assert.throws(() => none.serve(), message(/rest: no routes registered/));
   const missing = controllerWith(fakeProgram());
   missing.route('GET', '/a', 'nope');
-  assert.throws(() => missing.listen('127.0.0.1', 0), message(/rest: route GET \/a references missing annotation @nope/));
+  assert.throws(() => missing.serve(), message(/rest: route GET \/a references missing annotation @nope/));
   const wrong = controllerWith(fakeProgram(['a', 'interface Rule(Node) -> void', 'check']));
   wrong.route('GET', '/a', 'a');
-  assert.throws(() => wrong.listen('127.0.0.1', 0), message(/rest: entry check must implement RestHandler\(RestExchange\) -> void/));
+  assert.throws(() => wrong.serve(), message(/rest: entry check must implement RestHandler\(RestExchange\) -> void/));
   const dup = controllerWith(fakeProgram(['a'], ['a']));
   dup.route('GET', '/a', 'a');
-  assert.throws(() => dup.listen('127.0.0.1', 0), message(/rest: duplicate annotation @a/));
-  assert.equal(dup.port, 0);
+  assert.throws(() => dup.serve(), message(/rest: duplicate annotation @a/));
   const unbound = new RestController(createRegistry());
   unbound.route('GET', '/a', 'a');
-  assert.throws(() => unbound.listen('127.0.0.1', 0), message(/no program is bound/));
-  for (const c of [none, missing, wrong, dup]) assert.equal(c.listening, false);
+  assert.throws(() => unbound.serve(), message(/rest: no program is bound/));
+  for (const c of [none, missing, wrong, dup]) assert.equal(c.serving, false);
 });
 
-test('listen validation ignores entries that implement other interfaces', async () => {
+test('serve validation ignores entries that implement other interfaces', () => {
   const c = controllerWith(fakeProgram(['a'], ['other', 'interface Rule(Node) -> void']));
   c.route('GET', '/a', 'a');
-  assert.ok(c.listen('127.0.0.1', 0) > 0);
-  await c.close();
+  c.serve();
+  assert.equal(c.serving, true);
 });
 
-test('lifecycle: routes freeze while listening, double listen fails, port reports, restart works', async () => {
+test('lifecycle: routes freeze after rest_serve, a second rest_serve fails', () => {
   const c = controllerWith(fakeProgram(['a']));
   c.route('GET', '/a', 'a');
-  const port = c.listen('localhost', 0);
-  assert.ok(port > 0 && c.port === port && c.listening);
-  assert.throws(() => c.route('GET', '/b', 'a'), message(/rest: routes are frozen once the server is listening/));
-  assert.throws(() => c.listen('127.0.0.1', 0), message(/rest: server already listening/));
-  await c.close();
-  assert.equal(c.port, 0);
-  await c.stop(); // idempotent
-  const again = c.listen('127.0.0.1', 0);
-  assert.ok(again > 0);
-  await c.close();
+  c.serve();
+  assert.throws(() => c.route('GET', '/b', 'a'), message(/rest: routes are frozen once rest_serve has been called/));
+  assert.throws(() => c.serve(), message(/rest: rest_serve already called/));
 });
 
-test('listen failures: bad port, bad host, port in use', async () => {
-  const c = controllerWith(fakeProgram(['a'])); c.route('GET', '/a', 'a');
-  assert.throws(() => c.listen('127.0.0.1', 70000), message(/rest: port 70000 out of range 0\.\.65535/));
-  assert.throws(() => c.listen('example.com', 0), message(/host must be an IP address or localhost/));
-  const first = controllerWith(fakeProgram(['a'])); first.route('GET', '/a', 'a');
-  const taken = first.listen('127.0.0.1', 0);
-  assert.throws(() => c.listen('127.0.0.1', taken), message(/rest: cannot listen on 127\.0\.0\.1:\d+: EADDRINUSE/));
-  assert.equal(c.listening, false);
-  await first.close();
-});
-
-test('exchange rules: status range, header validation, reserved headers', () => {
+test('exchange rules: status range, header validation, reserved headers, counters', () => {
   const registry = createRegistry(); registerRest(registry);
   const x = new VmObject('RestExchange', { status: 200, headers: new Map(), body: '', state: { values: new Map(), counts: new Map() } });
   const call = (sig, ...args) => registry.invokeMethod(`method RestExchange.${sig}`, x, args);
@@ -193,70 +189,75 @@ test('exchange rules: status range, header validation, reserved headers', () => 
   assert.equal(call('get(string) -> string', 'k'), '', 'counters and strings are separate maps');
 });
 
-// ---- integration: transport ---------------------------------------------------------------------------------
-test('conformance suite: all scenarios over real TCP, then rest_stop() refuses connections', async () => {
-  const { rest } = startSuiteServer();
-  const port = rest.port;
-  assert.equal(await replay(port, assert), suite.scenarios.length);
-  await rest.closed;
-  await assert.rejects(exchange(port, Buffer.from('GET /health HTTP/1.1\r\n\r\n')), (e) => e.code === 'ECONNREFUSED');
+// ---- integration: stdio ---------------------------------------------------------------------------------------
+test('conformance suite through in-memory streams (stream, fatal, silent groups)', async () => {
+  assert.equal(await replay((input) => serveInMemory(input), assert), suite.stream.length - 1 + suite.fatal.length + suite.silent.length);
 });
 
-test('transport: a request split across TCP segments is reassembled', async () => {
-  const { rest } = startSuiteServer();
-  const socket = net.connect({ port: rest.port, host: '127.0.0.1' });
-  const chunks = [];
-  socket.on('data', (c) => chunks.push(c));
-  const closed = new Promise((resolve) => socket.on('close', resolve));
+test('conformance suite through a real child process: stdin to stdout, exit code 0', async () => {
+  assert.equal(await replay(serveProcess, assert), suite.stream.length - 1 + suite.fatal.length + suite.silent.length);
+});
+
+test('stdio: responses stream out while input is still arriving, request by request', async () => {
+  const input = new PassThrough(); const output = new PassThrough();
+  const { rest, program } = newController({ input, output });
+  const done = rest.run(program);
+  const next = () => new Promise((resolve) => output.once('data', resolve));
+  input.write(GET('/health'));
+  assert.match((await next()).toString(), /^HTTP\/1\.1 200 OK/);
+  input.write(GET('/count'));
+  assert.equal(parseResponses(await next(), []).at(0).body.toString(), '1');
+  input.end(GET('/count'));
+  assert.equal(parseResponses(await next(), []).at(0).body.toString(), '2');
+  await done;
+});
+
+test('stdio: a request split across chunks (even mid-header and mid-body) is reassembled', async () => {
+  const input = new PassThrough(); const output = new PassThrough();
+  const chunks = []; output.on('data', (c) => chunks.push(c));
+  const { rest, program } = newController({ input, output });
+  const done = rest.run(program);
   const body = '{"values":[10,20,12]}';
-  for (const part of [`POST /su`, `m HTTP/1.1\r\nHost: x\r\nContent-Len`, `gth: ${body.length}\r\n\r\n{"values"`, `:[10,20,12]}`]) {
-    socket.write(part);
-    await new Promise((r) => setTimeout(r, 20));
+  for (const part of ['POST /su', `m HTTP/1.1\r\nHost: x\r\nContent-Len`, `gth: ${body.length}\r\n\r\n{"values"`, ':[10,20,12]}']) {
+    input.write(part);
+    await new Promise((r) => setImmediate(r));
   }
-  await closed;
-  const r = parseResponse(Buffer.concat(chunks));
+  input.end();
+  await done;
+  const [r] = parseResponses(Buffer.concat(chunks), ['POST']);
   assert.equal(r.status, 201);
   assert.equal(r.body.toString(), '{"sum":42}');
-  await rest.close();
 });
 
-test('transport: concurrent clients are serialized, state increments are atomic and ordered', async () => {
-  const { rest } = startSuiteServer();
-  const get = async () => parseResponse(await exchange(rest.port, Buffer.from('GET /count HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'))).body.toString();
-  const results = await Promise.all(Array.from({ length: 40 }, get));
-  assert.deepEqual(results.map(Number).sort((a, b) => a - b), Array.from({ length: 40 }, (_, i) => i + 1));
-  await rest.close();
+test('stdio: pipelined requests in one chunk are answered in order', async () => {
+  const out = await serveInMemory(Buffer.concat([GET('/hello/a'), GET('/hello/b'), GET('/nope'), GET('/hello/c')]));
+  assert.deepEqual(parseResponses(out, []).map((r) => r.status), [200, 200, 404, 200]);
 });
 
-test('transport: an idle connection is dropped after readTimeoutMs and the server keeps serving', async () => {
-  const { rest } = startSuiteServer({ readTimeoutMs: 100 });
-  const idle = net.connect({ port: rest.port, host: '127.0.0.1' });
-  const dropped = new Promise((resolve) => idle.on('close', resolve));
-  idle.write('GET /hea');
-  await dropped;
-  const r = parseResponse(await exchange(rest.port, Buffer.from('GET /health HTTP/1.1\r\nHost: x\r\n\r\n')));
-  assert.equal(r.status, 200);
-  await rest.close();
-});
-
-test('transport: handler errors reach onHandlerError with the entry name and never the client', async () => {
+test('stdio: handler errors reach onHandlerError with the entry name and never the client; serving continues', async () => {
   const seen = [];
-  const { rest } = startSuiteServer({ onHandlerError: (entry, text) => seen.push([entry, text]) });
-  const r = parseResponse(await exchange(rest.port, Buffer.from('GET /boom HTTP/1.1\r\nHost: x\r\n\r\n')));
-  assert.equal(r.status, 500);
-  assert.equal(r.body.toString(), '{"error":"internal error"}');
+  const out = await serveInMemory(Buffer.concat([GET('/boom'), GET('/health')]), { onHandlerError: (entry, text) => seen.push([entry, text]) });
+  const [a, b] = parseResponses(out, []);
+  assert.equal(a.status, 500);
+  assert.equal(a.body.toString(), '{"error":"internal error"}');
+  assert.equal(b.status, 200);
   assert.equal(seen.length, 1);
   assert.equal(seen[0][0], 'boom');
-  assert.match(seen[0][1], /division by zero|zero/i);
-  await rest.close();
+  assert.match(seen[0][1], /zero/i);
 });
 
-test('transport: close() while idle and while a request is in flight both terminate cleanly', async () => {
-  const { rest } = startSuiteServer();
-  await rest.close();
-  assert.equal(rest.port, 0);
-  const second = startSuiteServer();
-  const pending = exchange(second.rest.port, Buffer.from('GET /health HTTP/1.1\r\nHost: x\r\n\r\n')).catch(() => 'reset');
-  await second.rest.close();
-  await pending; // either a normal response or a reset: closing must never hang
+test('stdio: invalid percent escapes in the path or query are 400 and do not end serving', async () => {
+  const out = await serveInMemory(Buffer.concat([GET('/nope?x=%zz'), GET('/hello/%zz'), GET('/health')]));
+  assert.deepEqual(parseResponses(out, []).map((r) => r.status), [400, 400, 200]);
+});
+
+test('stdio: rest_stop() before rest_serve() means the body ends without reading', async () => {
+  const { rest, program } = newController({ input: new PassThrough(), output: new PassThrough() });
+  rest.stop = rest.stop.bind(rest);
+  rest.serve = () => { rest.serving = true; rest.stopped = true; };
+  await rest.run(program); // never resolves if it tried to read the (never ended) input
+});
+
+test('stdio: requestBytes composes valid HTTP for every stream scenario (self-check of the harness)', () => {
+  for (const s of suite.stream) assert.ok(takeRequest(requestBytes(s), 1 << 20).request, s.name);
 });

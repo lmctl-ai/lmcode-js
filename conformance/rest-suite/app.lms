@@ -66,11 +66,6 @@ fn readme(x: RestExchange) -> void implements RestHandler {
   x.send("literal wins");
 }
 
-@port
-fn port(x: RestExchange) -> void implements RestHandler {
-  x.send(str(rest_port()));
-}
-
 @count
 fn count(x: RestExchange) -> void implements RestHandler {
   x.send(str(x.increment("requests")));
@@ -104,10 +99,9 @@ rest_route("GET", "/headers", "headers");
 rest_route("PUT", "/headers", "headers");
 rest_route("GET", "/files/{rest...}", "files");
 rest_route("GET", "/files/readme", "readme");
-rest_route("GET", "/port", "port");
 rest_route("GET", "/count", "count");
 rest_route("PUT", "/note", "save");
 rest_route("GET", "/note", "load");
 rest_route("POST", "/shutdown", "shutdown");
-rest_listen(0);
+rest_serve();
 end _lmcode_

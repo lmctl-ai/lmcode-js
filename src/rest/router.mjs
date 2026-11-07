@@ -27,7 +27,7 @@ export function parseRoute(method, path) {
   const invalid = (reason) => fail(`rest: invalid route ${label}: ${reason}`);
   if (!METHODS.includes(method)) invalid('method must be one of ' + METHODS.join(', '));
   if (!path.startsWith('/')) invalid("path must start with '/'");
-  if (/[\s\x00-\x1f\x7f?#]/.test(path)) invalid('path must not contain whitespace, control characters, ? or #');
+  if (/[\x00-\x20\x7f?#]/.test(path)) invalid('path must not contain whitespace, control characters, ? or #');
   const raw = path.slice(1).split('/');
   const names = new Set();
   const segments = raw.map((text, index) => {

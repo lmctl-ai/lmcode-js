@@ -26,8 +26,8 @@ export function parseHead(text) {
   const headers = [];
   for (const line of lines.slice(1)) {
     const colon = line.indexOf(':');
-    if (colon <= 0 || /[\s]/.test(line.slice(0, colon)) || /[\x00-\x08\x0a-\x1f\x7f]/.test(line)) return { error: 400 };
-    headers.push([line.slice(0, colon), line.slice(colon + 1).trim()]);
+    if (colon <= 0 || /[\x00-\x20\x7f]/.test(line.slice(0, colon)) || /[\x00-\x08\x0a-\x1f\x7f]/.test(line)) return { error: 400 };
+    headers.push([line.slice(0, colon), line.slice(colon + 1).replace(/^[ \t]+|[ \t]+$/g, '')]);
   }
   return { method, target, headers };
 }
@@ -45,6 +45,24 @@ export function bodyLength(headers) {
 export function encodeResponse({ status, headers, body }, { head = false } = {}) {
   const lines = [`HTTP/1.1 ${status} ${reasonPhrase(status)}`];
   for (const [name, value] of headers) lines.push(`${name}: ${value}`);
-  lines.push(`Content-Length: ${body.length}`, 'Connection: close', '', '');
+  lines.push(`Content-Length: ${body.length}`, '', '');
   return head ? Buffer.from(lines.join('\r\n'), 'latin1') : Buffer.concat([Buffer.from(lines.join('\r\n'), 'latin1'), body]);
+}
+
+/**
+ * Take one request off the front of `buffer` (a Buffer).
+ * → { need: true } | { fatal: status } | { request, rest }.  A fatal framing error ends serving (spec: HTTP subset).
+ */
+export function takeRequest(buffer, maxBodyBytes) {
+  const end = buffer.indexOf('\r\n\r\n', 0, 'latin1');
+  if (end < 0) return buffer.length > MAX_HEADER_BYTES ? { fatal: 431 } : { need: true };
+  if (end > MAX_HEADER_BYTES) return { fatal: 431 };
+  const head = parseHead(buffer.subarray(0, end).toString('latin1'));
+  if (head.error) return { fatal: head.error };
+  const size = bodyLength(head.headers);
+  if (size.error) return { fatal: size.error };
+  if (size.length > maxBodyBytes) return { fatal: 413 };
+  const start = end + 4;
+  if (buffer.length < start + size.length) return { need: true };
+  return { request: { method: head.method, target: head.target, headers: head.headers, body: Buffer.from(buffer.subarray(start, start + size.length)) }, rest: buffer.subarray(start + size.length) };
 }
